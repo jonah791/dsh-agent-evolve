@@ -32,6 +32,10 @@ pnpm build
 | `evolve_commit` | 提交新锚点或回滚 |
 | `evolve_ledger` | 读历史账本 |
 
+## 相关
+
+- [我的数字生命爱丽丝 — 插件生态中心（架构总览）](https://github.com/jonah791/alice-digital-life)
+
 ## License
 
 MIT
