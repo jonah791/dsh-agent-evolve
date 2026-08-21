@@ -42,7 +42,7 @@ export const Config = z.object({
   mainSessionId: z.string(),
   pythonBin: z.string().default('python'),
   dshHome: z.string().default('C:/Users/tr/.dsh'),
-  dataDir: z.string().default('C:/Users/tr/Documents/alice/.evolve'),
+  dataDir: z.string().default('E:/alice/.evolve'),
   evalTimeoutMs: z.number().default(1500000),
 })
 
@@ -189,6 +189,11 @@ export function apply(ctx: Context, config: Config): void {
         },
         signal: exec.signal,
       })
+      // startContinuable 只投递初始 prompt 不唤醒：子智能体停在 ready 直到有消息。
+      // v3（2026-08-17 修正）：不再 spawn 内嵌 followup 唤醒——gen4 实证立即 followup
+      // 与 startContinuable 竞态，导致 turn 组装丢失系统上下文（inputTokens 从 2719 暴跌到
+      // 293），模型在无上下文下幻觉乱码（gen5/retry 两次实证）。
+      // 唤醒改由主会话在 spawn 返回 sessionId 后手动 send_message（gen3/gen4a 验证的可靠路径）。
       store.writeRun({ runId, gen, sessionId: started.childId, status: 'pending', at: new Date().toISOString() })
       return { runId, sessionId: started.childId }
     },
