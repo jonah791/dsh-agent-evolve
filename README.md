@@ -1,3 +1,13 @@
+<!--
+  DSH 插件生态公约声明（plugin-ecosystem-convention · 组合优先/声明清晰/兼容优先）
+  purpose: 
+  inject: 'tools','agents','subagents'
+  tools: evolve_init,evolve_edit,evolve_commit,evolve_round_start,evolve_spawn,evolve_status,evolve_submit,evolve_ledger
+  runtime: host-only
+  envDeps: 无（纯逻辑/标准 Node）
+  boundary: 无特殊授权边界
+  compat: cordis ^4.0.1 / dsh-tools ^0.1.0-rc.6
+-->
 # dsh-agent-evolve — 跨代自评估进化插件
 
 DSH（DeepSeek Harness）插件：宿主 agent 本体的自我进化系统——编辑本体规则（AGENTS.md）→ 子智能体继承验证 → 分数对比 → 提交或回滚，形成跨代自评估闭环。
