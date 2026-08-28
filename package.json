@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "dsh-agent-evolve",
   "version": "0.1.0",
   "description": "跨代自评估进化插件：配置仓库（版本化资源+锚点链）、热重载（.agent-presets 运行时应用/回滚）、子智能体白纸继承配置跑 modeltest 评测、账本（分数/轨迹/失败模式）。受益主体为宿主 agent 本体。",
