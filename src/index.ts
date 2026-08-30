@@ -41,7 +41,8 @@ export const Config = z.object({
   workspaceDir: z.string(),
   mainSessionId: z.string(),
   pythonBin: z.string().default('python'),
-  dshHome: z.string().default('C:/Users/tr/.dsh'),
+  // 2026-08-30 对齐：DSH_HOME 已从 C:/Users/tr/.dsh 迁移到 E:/alice/.dsh（8-21）；默认值跟随环境变量，防陈旧路径兜底踩坑
+  dshHome: z.string().default(process.env.DSH_HOME || ''),
   dataDir: z.string().default('E:/alice/.evolve'),
   evalTimeoutMs: z.number().default(1500000),
 })
