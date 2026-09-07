@@ -10,6 +10,12 @@
 -->
 # dsh-agent-evolve — 跨代自评估进化插件
 
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-agent-evolve"><img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+</p>
 DSH（DeepSeek Harness）插件：宿主 agent 本体的自我进化系统——编辑本体规则（AGENTS.md）→ 子智能体继承验证 → 分数对比 → 提交或回滚，形成跨代自评估闭环。
 
 ## 功能特性
