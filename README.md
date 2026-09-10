@@ -6,13 +6,13 @@
   runtime: host-only
   envDeps: 无（纯逻辑/标准 Node）
   boundary: 无特殊授权边界
-  compat: cordis ^4.0.1 / dsh-tools ^0.1.0-rc.6
+  compat: cordis ^4.0.1 / dsh-tools ^0.1.0-rc.6 / DSH 0.1.5（persona 键 prefix）
 -->
 # dsh-agent-evolve — 跨代自评估进化插件
 
 
 <p align="center">
-  <a href="https://github.com/jonah791/dsh-agent-evolve"><img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version"></a>
+  <a href="https://github.com/jonah791/dsh-agent-evolve"><img src="https://img.shields.io/badge/version-0.1.2-blue" alt="version"></a>
   <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
   <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
 </p>
@@ -47,6 +47,11 @@ pnpm build
 | `evolve_edit` | 编辑进化资源（规则段/任务说明书） |
 | `evolve_commit` | 提交新锚点或回滚 |
 | `evolve_ledger` | 读历史账本 |
+
+## 兼容性
+
+- cordis `^4.0.1` / `@deepseek-ai/dsh-tools` `^0.1.0-rc.6`
+- **persona 配置键（0.1.2 修复）**：DSH **0.1.5 起**把 `@deepseek-ai/dsh-persona` 的配置键由 `text` 改名为 `prefix`。本插件 0.1.2 起 `evolve_round_start` 渲染出的 `evolve-live` 预设使用 `prefix:`——否则在 0.1.5 上该预设会挂载失败（`$.prefix missing required value`），导致会话创建失败。在 0.1.5 之前的宿主上运行本插件时，请把渲染模板中的 `prefix:` 回改为 `text:`。
 
 ## 相关
 

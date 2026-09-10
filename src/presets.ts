@@ -15,7 +15,7 @@ export function renderPreset(
 ): string {
   const dir = join(dshHome, PRESET_ROOT, PRESET_ID)
   mkdirSync(dir, { recursive: true })
-  // persona text 占位符替换
+  // persona prefix 占位符替换（0.1.5 起配置键为 prefix）
   const rendered = composition.includes('{{SYSTEM_PROMPT}}')
     ? composition.replace(/\{\{SYSTEM_PROMPT\}\}/g, () => indentBlock(systemPrompt, 6))
     : composition
@@ -42,11 +42,11 @@ function indentBlock(text: string, spaces: number): string {
   return out.join('\n')
 }
 
-/** 在 composition 模板中把 persona 的 text 替换为占位符（evolve_init 用）。 */
+/** 在 composition 模板中把 persona 的 prefix 替换为占位符（evolve_init 用）。 */
 export function replacePersonaText(composition: string): string {
-  // standard 的 persona text 是 "text: >-" 块；替换为占位符行
-  const pattern = /(text:\s*>?-\s*\n(?:\s{6,}.*\n?)*)/m
+  // 0.1.5 起 persona 配置键为 "prefix:"（原 "text:"）；块标量形如 "prefix: >-"
+  const pattern = /(prefix:\s*>?-\s*\n(?:\s{6,}.*\n?)*)/m
   const m = composition.match(pattern)
   if (!m) return composition
-  return composition.slice(0, m.index) + 'text: |\n      {{SYSTEM_PROMPT}}\n' + composition.slice((m.index ?? 0) + m[0].length)
+  return composition.slice(0, m.index) + 'prefix: |\n      {{SYSTEM_PROMPT}}\n' + composition.slice((m.index ?? 0) + m[0].length)
 }
