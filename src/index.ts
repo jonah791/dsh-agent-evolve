@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-subagent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { EvolveStore } from './store.ts'
+import { selectParentAgent } from './parent.ts'
 import { renderPreset } from './presets.ts'
 import { runFullEval } from './evaluator.ts'
 import type { Ledger, ResourceId } from './types.ts'
@@ -30,6 +31,11 @@ export const inject = ['tools', 'agents', 'subagents'] as const
 export interface Config {
   modeltestDir: string
   workspaceDir: string
+  /**
+   * 主会话锚点（可选）。**只作优先锚点**，不作唯一真源——见 apply 内 resolveParentAgent 的
+   * 2026-09-11 修复说明：写死的 session id 会随会话更替腐化，导致 evolve_spawn 抛错、
+   * 整条进化主线静默失效。留空则自动解析当前活跃根 agent。
+   */
   mainSessionId: string
   pythonBin: string
   dshHome: string
@@ -39,7 +45,7 @@ export interface Config {
 export const Config = z.object({
   modeltestDir: z.string(),
   workspaceDir: z.string(),
-  mainSessionId: z.string(),
+  mainSessionId: z.string().default(''),
   pythonBin: z.string().default('python'),
   // 2026-08-30 对齐：DSH_HOME 已从 C:/Users/tr/.dsh 迁移到 E:/alice/.dsh（8-21）；默认值跟随环境变量，防陈旧路径兜底踩坑
   dshHome: z.string().default(process.env.DSH_HOME || ''),
@@ -53,6 +59,26 @@ const RULES_MARKER_END = '<!-- dsh-agent-evolve:end -->'
 
 export function apply(ctx: Context, config: Config): void {
   const store = new EvolveStore(config.dataDir, config.modeltestDir, config.mainSessionId, '')
+
+  /**
+   * 解析派发子智能体所需的父 agent（= 当前主会话）。
+   *
+   * 2026-09-11 修复（**配置腐化导致进化主线静默失效**）：旧实现直接
+   * `ctx.agents.get(config.mainSessionId)`，而配置里的 session id 是**写死在 profile patch**
+   * 里的（session-5a785c96…）。会话更替后该 id 不再在场 → evolve_spawn 直接抛
+   * 「找不到主会话 agent」→ **整条进化主线（本体规则集的量化基准）在无人察觉下失效**
+   * （最后成功评测 2026-08-17，闲置 24 天，是主人要求「发起评测轮」时才暴露的）。
+   *
+   * 正确语义：mainSessionId 是「当时的主会话」快照，只能当**优先锚点**，不能当唯一真源。
+   * 解析顺序：配置锚点（若能解析）→ 当前活跃根 agent（delegationDepth 0 / 缺省）；
+   * 两者皆无 → 抛**响亮**错误（列出在场 agent 数，便于定位，不静默）。
+   */
+  const resolveParentAgent = (): Agent => {
+    const pinned = config.mainSessionId ? ctx.agents.get(config.mainSessionId as SessionId) : undefined
+    const picked = selectParentAgent(config.mainSessionId, pinned as Agent | undefined, ctx.agents.list() as Agent[])
+    if ('error' in picked) throw new Error(picked.error)
+    return picked.agent
+  }
 
   // ---------- evolve_init ----------
   ctx.tools.register(defineTool({
@@ -178,8 +204,7 @@ export function apply(ctx: Context, config: Config): void {
       const rules = store.contentOf(l, 'agent-rules')
       const candidate = args.task ?? store.contentOf(l, 'candidate-prompt')
       const task = buildTaskPrompt(candidate, rules)
-      const parent = ctx.agents.get(config.mainSessionId as SessionId)
-      if (!parent) throw new Error('找不到主会话 agent：' + config.mainSessionId)
+      const parent = resolveParentAgent()
       const started = await ctx.subagents.startContinuable({
         provider: 'spawn',
         label: 'evolve-run-' + gen,
