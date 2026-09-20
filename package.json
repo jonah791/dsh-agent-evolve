@@ -12,9 +12,10 @@
                           },
                     "./package.json":  "./package.json"
                 },
-    "files":  [
-                  "lib"
-              ],
+    "files": [
+                  "lib",
+                  "dsh-plugin.json"
+    ],
     "license":  "MIT",
     "peerDependencies":  {
                              "@deepseek-ai/cordis":  "^4.0.1",
