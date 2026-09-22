@@ -10,17 +10,29 @@
  * - 控制变量：子智能体无对话历史、无账本、无经验注入——唯一变量是本体配置版本。
  * @module dsh-agent-evolve
  */
-import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import { defineTool } from '@deepseek-ai/dsh-tools'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { EvolveStore } from './store.ts'
 import { selectParentAgent } from './parent.ts'
+// t-a19d7800：孤儿治理——超期识别、收尸留痕、截断提交判定（纯函数）
+import {
+  DEFAULT_EXPECTED_MS,
+  TRUNCATED_CAVEAT,
+  describeOrphan,
+  findOrphans,
+  reapNote,
+  scanSessionOutcome,
+  workspaceMissingMessage,
+  workspaceStatus,
+} from './orphans.ts'
 import { renderPreset } from './presets.ts'
 import { runFullEval } from './evaluator.ts'
 import type { Ledger, ResourceId } from './types.ts'
@@ -79,6 +91,45 @@ export function apply(ctx: Context, config: Config): void {
     if ('error' in picked) throw new Error(picked.error)
     return picked.agent
   }
+
+  /** 孤儿侧车轨迹路径（§5.22：关键机制不得只写 logger——日志无人读 = 静默失效）。 */
+  const orphansTracePath = join(config.dataDir, 'orphans.jsonl')
+
+  /**
+   * 孤儿自检（t-a19d7800 件 3 的「通知」半）。
+   *
+   * 事故形态：spawn→submit 环断掉后 run 永久停在 `pending`，**没有通知、没有收尸**
+   * （存量 6 条 gen2/gen4×2/gen8/gen9/gen10；gen10 之后 9 小时无人发现，还是感知圈撞见的）。
+   * 纪律：① §5.10「静默失败 = 死亡温床」——本应发生却没发生的事必须被说出来；
+   * ② §5.22——留痕要**落盘**（侧车 jsonl），不能只 log；
+   * ③ §5.24——启动自检与宿主同进程，**绝不允许抛出**（逃逸异常直接杀 web）。
+   */
+  const scanOrphansAtBoot = (): void => {
+    try {
+      const orphans = findOrphans(store.listRuns(), Date.now())
+      if (orphans.length === 0) return
+      try {
+        appendFileSync(orphansTracePath, JSON.stringify({
+          at: new Date().toISOString(),
+          count: orphans.length,
+          orphans: orphans.map(describeOrphan),
+        }) + '\n', 'utf8')
+      } catch { /* 落盘失败不阻塞加载 */ }
+      // 尽力告知主会话；解析不到父 agent 不算错（侧车已留痕，不构成静默）
+      try {
+        const parent = resolveParentAgent()
+        const text = '【进化孤儿】发现 ' + orphans.length + ' 条超期 run（spawn→submit 环已断）：\n'
+          + orphans.slice(0, 6).map((o) => '· ' + describeOrphan(o)).join('\n')
+          + '\n处置：`evolve_orphans` 看清单、`evolve_reap` 收尸（带原因，不删记录）。'
+        parent.send(
+          createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-agent-evolve' } }),
+          'next-step',
+          true,
+        )
+      } catch { /* 主会话不在场：侧车已留痕 */ }
+    } catch { /* 自检绝不影响插件加载 */ }
+  }
+  scanOrphansAtBoot()
 
   // ---------- evolve_init ----------
   ctx.tools.register(defineTool({
@@ -205,6 +256,12 @@ export function apply(ctx: Context, config: Config): void {
       const candidate = args.task ?? store.contentOf(l, 'candidate-prompt')
       const task = buildTaskPrompt(candidate, rules)
       const parent = resolveParentAgent()
+      // 件 1（治未乱 > 事后收尸）：派发**前**校验工作区真实存在。
+      // 2026-09-13 的真因就是「归档 `_tmp_review` 时把活跃工作区 modeltest 一起搬走」，
+      // 此后每一轮都无从下手却**照常派发**，最终只表现为「run 永远停在 pending」。
+      // 判据抽在 orphans.workspaceStatus（纯函数、可单测；藏在这里就只有真派发才走得到）。
+      const ws = workspaceStatus(config.modeltestDir, existsSync, join)
+      if (ws.missing) throw new Error(workspaceMissingMessage(ws.project, config.modeltestDir))
       const started = await ctx.subagents.startContinuable({
         provider: 'spawn',
         label: 'evolve-run-' + gen,
@@ -220,7 +277,16 @@ export function apply(ctx: Context, config: Config): void {
       // 与 startContinuable 竞态，导致 turn 组装丢失系统上下文（inputTokens 从 2719 暴跌到
       // 293），模型在无上下文下幻觉乱码（gen5/retry 两次实证）。
       // 唤醒改由主会话在 spawn 返回 sessionId 后手动 send_message（gen3/gen4a 验证的可靠路径）。
-      store.writeRun({ runId, gen, sessionId: started.childId, status: 'pending', at: new Date().toISOString() })
+      store.writeRun({
+        runId,
+        gen,
+        sessionId: started.childId,
+        status: 'pending',
+        at: new Date().toISOString(),
+        // 件 2：记下父会话与**期望时长**——孤儿要能找回主会话告知；超期判据也要有基准
+        parentSessionId: (parent as { id?: string }).id,
+        expectedMs: DEFAULT_EXPECTED_MS,
+      })
       return { runId, sessionId: started.childId }
     },
   }))
@@ -237,6 +303,55 @@ export function apply(ctx: Context, config: Config): void {
     },
   }))
 
+  // ---------- evolve_orphans（t-a19d7800 件 3：看得见）----------
+  ctx.tools.register(defineTool({
+    name: 'evolve_orphans',
+    description: '列出**孤儿 run**（超期未收尾的 pending/running）：spawn→submit 环断掉后的可见面。只读，不收尸。',
+    parameters: { graceFactor: { type: 'number', description: '宽限倍数（缺省 3，即超过期望时长×3 才算孤儿）' } },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { count: { type: 'number', required: true }, orphans: { type: 'json', required: true } } }, render: (_a, v) => [{ type: 'text', text: v.count === 0 ? '无孤儿 run。' : ('孤儿 ' + v.count + ' 条：\n' + (v.orphans as string[]).map((s) => '· ' + s).join('\n')) }] },
+    async execute(args: { graceFactor?: number }) {
+      const orphans = findOrphans(store.listRuns(), Date.now(), args.graceFactor ?? 3)
+      return { count: orphans.length, orphans: JSON.parse(JSON.stringify(orphans.map(describeOrphan))) }
+    },
+  }))
+
+  // ---------- evolve_reap（件 3 的「收尸」半：有原语，且留痕）----------
+  ctx.tools.register(defineTool({
+    name: 'evolve_reap',
+    description: '收尸：把超期 run 标为 failed（带原因与时刻），**不删除记录**。缺省 dryRun=true 只预览；确认后传 dryRun:false 落盘。',
+    parameters: {
+      reason: { type: 'string', description: '收尸原因（写进 run 与账本痕迹）' },
+      runId: { type: 'string', description: '只收这一条（缺省：全部孤儿）' },
+      dryRun: { type: 'boolean', description: 'true=只预览不写（缺省 true）' },
+      graceFactor: { type: 'number', description: '宽限倍数（缺省 3）' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { dryRun: { type: 'boolean', required: true }, reaped: { type: 'json', required: true } } }, render: (_a, v) => [{ type: 'text', text: (v.dryRun ? '（预览，未写盘）' : '（已写盘）') + '收尸 ' + (v.reaped as string[]).length + ' 条' + ((v.reaped as string[]).length ? '：\n' + (v.reaped as string[]).map((s) => '· ' + s).join('\n') : '') }] },
+    async execute(args: { reason?: string; runId?: string; dryRun?: boolean; graceFactor?: number }) {
+      const reason = args.reason ?? '超期未收尾（孤儿）'
+      const dryRun = args.dryRun !== false
+      const all = store.listRuns()
+      const targets = args.runId
+        ? all.filter((r) => r.runId === args.runId)
+        : findOrphans(all, Date.now(), args.graceFactor ?? 3).map((o) => all.find((r) => r.runId === o.runId)!).filter(Boolean)
+      const done: string[] = []
+      for (const r of targets) {
+        if (r.status === 'done' || r.status === 'failed') continue
+        if (!dryRun) {
+          const at = new Date().toISOString()
+          store.writeRun({
+            ...r,
+            status: 'failed',
+            doneAt: at,
+            reaped: { at, reason },
+            note: ((r.note ?? '') + ' ' + reapNote(reason)).trim(),
+          })
+        }
+        done.push(r.runId + '（gen' + r.gen + ' · ' + r.status + ' ⇒ failed）')
+      }
+      return { dryRun, reaped: JSON.parse(JSON.stringify(done)) }
+    },
+  }))
+
   // ---------- evolve_submit ----------
   ctx.tools.register(defineTool({
     name: 'evolve_submit',
@@ -247,6 +362,24 @@ export function apply(ctx: Context, config: Config): void {
       const run = store.readRun(args.runId)
       if (!run) throw new Error('未知 run：' + args.runId)
       const l = store.ensureLedger()
+      // 件 4（t-a19d7800）：提交**前**校验 child 终态。gen10 那次 child 被撕裂（无 turn/end）
+      // 却照样提交，产出的 87.5 是**截断读数**——不标记，将来会被误读成能力回归。
+      // 形状判据与孤儿识别共用 `orphans.scanSessionOutcome`（同一真源，不另写一套）。
+      // 边界诚实：child 会话已不在场（如重启后）时**无法判定**，此时不标记截断——
+      // 不假装「完整」，但也不无中生有地扣帽子；该情形留由 §8 的待验证项覆盖。
+      let truncated = false
+      if (run.sessionId) {
+        const child = ctx.agents.get(run.sessionId as SessionId)
+        // 品牌类型（SessionSeq）跨包不可直赋 number ⇒ 经 unknown 转一次（技能 dsh-sensor-plugin 记过同款坑）
+        if (child) {
+          const read = child.session.eventAt.bind(child.session) as unknown as (seq: number) => unknown
+          truncated = scanSessionOutcome(read, child.session.seq as unknown as number).truncated
+        }
+      }
+      if (truncated) {
+        run.note = ((run.note ?? '') + ' ' + TRUNCATED_CAVEAT).trim()
+        store.writeRun(run)
+      }
       const project = join(config.modeltestDir, 'workspace', 'project2_task')
       const score = await runFullEval(config.modeltestDir, config.pythonBin, project, {
         model: 'dsh-evolve',

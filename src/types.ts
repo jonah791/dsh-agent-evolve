@@ -58,4 +58,10 @@ export interface RunState {
   at: string
   doneAt?: string
   note?: string
+  /** 派发它的父会话 id（t-a19d7800 件 2：孤儿要能找回主会话告知，也便于事后归因）。 */
+  parentSessionId?: string
+  /** 本轮的**期望时长**（ms）——超期判据的基准；缺省用 `orphans.DEFAULT_EXPECTED_MS`。 */
+  expectedMs?: number
+  /** 被收尸的痕迹（件 3）：收尸不留痕 = 又一次静默失效。 */
+  reaped?: { at: string; reason: string }
 }
