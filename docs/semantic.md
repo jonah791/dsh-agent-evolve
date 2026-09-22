@@ -106,6 +106,10 @@
 | 8 | 评测完成判据是 summary 存在而非 exit 0 | `src/evaluator.ts:runFullEval` 注释 + 非零退出下仍解析 `summary.json`；命令：`python <modeltestDir>/evaluator/run_full_eval.py <project> --no-diff` | 待验收 |
 | 9 | `evolve_spawn` 后子智能体停在 ready，须手动 `send_message` 才开跑 | `evolve_status` 返回 `status: "pending"`，直到主会话投递消息 | 待验收 |
 | 10 | 改代码后 `lib/*.js` mtime 晚于 web 进程启动时间才算真正生效 | `Get-ChildItem lib`（本次读数 mtime `2026/9/11 13:45:12`）vs web 进程启动时间 | 待验收 |
+| 11 | 派发**前**校验工作区存在；缺失则**响亮报错且不写 run 记录**（治未乱） | `tests/orphans.test.mjs`「尸体样本（09-13 真因形状）…判缺失」+「真 IO 交叉验证：合成的不存在路径确实被判缺失」 | 已实测（离线） |
+| 12 | 超期 `pending`/`running` 被判为孤儿，且给出**超期量**（不是布尔）+ 三组对照不误报 | `tests/orphans.test.mjs`「尸体样本（gen10 形状）…带超期量」·「刚派发 10 分钟不得判孤儿」·「done/failed 永不入选」·「时刻不可解析 ⇒ 不判孤儿」 | 已实测（离线） |
+| 13 | 收尸有原语且**留痕**（不删记录）：`reap` 写 `reaped:{at,reason}` + note；缺省 `dryRun` 只预览 | `evolve_reap`（`runs/<id>.json` 应变 `status:"failed"` 且含 `reaped`）——需重启后执行 | 待线上验收（重启被宿主构建错位阻断，见 §9） |
+| 14 | 截断提交被标记：child 无闭合 `turn/end` ⇒ `note` 带固定 caveat，随账本代记留档 | `tests/orphans.test.mjs`「尸体样本（gen10 现场形状）：…⇒ 判截断」+「末轮以 turn/end 收尾 ⇒ 不得判截断」 | 已实测（离线） |
 
 ## 8 · 与实现的关系
 
@@ -128,6 +132,13 @@
 - 2026-08-17 spawn 唤醒竞态回修（v3）+ 0.1.2 persona 键改 `prefix:`（`evolve-live` 模板；DSH 0.1.5 起）——来源：`src/index.ts` 注释与 README「兼容性」
 - 规则段版本演进 v0.0→v0.4 全部留痕于 `ledger.json`（本次读数：v0.4「抽象行为原则 v0.4」，7 条）
 
+- **2026-09-22 孤儿治理（t-a19d7800）**
+  - 语义**被补充（四件）**：① **派发前工作区体检**（`orphans.workspaceStatus` + `workspaceMissingMessage`，把 09-13 的真因写进错误文本）；② `RunState` 增 `parentSessionId` / `expectedMs`（超期判据的基准）；③ 新增 `evolve_orphans`（只读清单）与 `evolve_reap`（缺省 dryRun；收尸写 `reaped:{at,reason}` 痕迹，**不删记录**），并在 `apply` 时自检、落盘侧车 `<dataDir>/orphans.jsonl` + 尽力告知主会话（整体 guarded，§5.24：逃逸异常会杀 web）；④ `evolve_submit` 前用 `scanSessionOutcome` 判 child 是否闭合（**`turn/end` 之上还有 `turn/start` ⇒ 截断**），命中则写固定 caveat 防未来把截断读数误读成回归。
+  - 语义**被修正（我的实现 bug，由测试抓出）**：首版扫描在降序回溯时会把**已闭合轮的 `turn/start`** 误判成未闭合（尸体样本靠巧合通过、对照组才露馅）⇒ 判据改为「`turn/end` 之上是否还有 `turn/start`」。**这就是为什么每条判据都要有对照组**。
+  - 判据：`node --test tests/*.test.mjs` → **23/23**（新增 16：13 条孤儿/截断含 gen10 形状尸体样本与三组对照 + 3 条工作区体检）；构建以 `lib/*.js` **mtime 前进**验证（非「跑了没报错」）。
+  - ⚠ **活体验收被宿主级构建错位阻断（不是本插件的问题）**：`.dsh/profiles/web` 组合加载失败（`bundle/web-app` 的 `dsh.bundle.patch` 已改为 5 层数组，而 `app-boot/lib` 仍是 09-19 的单字符串版本）⇒ `preflight_check` FAIL、**任何重启被拒**。尸体样本 `gen99-corpse.json` 已留在 `<dataDir>/runs/`（连同 6 条真实孤儿 gen2/gen4×3/gen8×2/gen9/gen10）⇒ **下次重启成功时启动自检会自动报出**，验收自行完成（步骤见 §7 第 13 行）。
+  - 教训（比缺陷本身重要）：**同宿主给既有机制新增通道时，必须把既有防线的每一半抄过来**——同日 `dsh-agent-context` 的梯级插话就因没继承既有防线而每次压缩后误报一次（详见技能 `acceptance-integrity` §三·补 6）。
+
 ## 10 · 未决问题
 
 1. **预设占位符从不替换**：`EvolveStore` 构造时 `compositionSource` 传 `''`，`evolve_round_start` 走 `defaultComposition`，而该模板**不含** `{{SYSTEM_PROMPT}}` ⇒ `renderPreset` 的替换分支不触发，`evolve-live` 预设里没有本体规则；规则实际经 `buildTaskPrompt` 进入子智能体任务文本。是否有意为之？待确认。
@@ -135,5 +146,5 @@
 3. `ResourceId` 含 `composition`，但无任何工具入参或初始化路径写它（`evolve_init` 只注册 `agent-rules`/`candidate-prompt`）。
 4. `evolve_submit` 取「`results/` 下 mtime 最新的 summary.json」，未按 `runGroupId`（`evolve-gen<n>`）精确定位——并行/追加评测时存在取错风险。
 5. `evalTimeoutMs` 默认 25 分钟；超时（`124`）与无 summary 报同一条错误文案，事后无法从错误区分超时与评测崩溃。
-6. `dataDir` 现场落点 `E:/alice/.evolve`（`E:/alice/.dsh/.evolve` 不存在）说明有显式配置覆盖默认值，但 patch 落点未在 `E:\alice\.dsh` 下检索到——配置文件位置待查。
+6. ~~`dataDir` 现场落点 `E:/alice/.evolve` …配置文件位置待查。~~ **2026-09-22 结案**：配置就在 `.dsh/profiles/web/cordis.patch.yml` 的 `dsh-agent-evolve` 行里显式声明——`modeltestDir: E:/alice/_tmp_review/modeltest` / `workspaceDir: E:/alice` / `mainSessionId: session-5a785c96-…` / `dshHome: E:/alice/.dsh` / `dataDir: E:/alice/.evolve`。⇒ 默认值（`DSH_HOME/.evolve`）**不生效**，以 patch 为准。**顺带一个风险登记**：`modeltestDir` 指向 `_tmp_review/modeltest`（一个会被归档/清理的临时目录）⇒ 第 11 行的工作区体检正是防它再被搬走。
 7. 本文件状态 `draft`：第 7 节 4/5/8/9/10 条仍「待验收」，未做线上验收前不得升 `implemented`。
