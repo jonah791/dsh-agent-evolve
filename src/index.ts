@@ -37,6 +37,12 @@ import { renderPreset } from './presets.ts'
 import { runFullEval } from './evaluator.ts'
 import type { Ledger, ResourceId } from './types.ts'
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-agent-evolve': { kind: 'dsh-agent-evolve' }
+  }
+}
+
 export const name = 'agent-evolve'
 export const inject = ['tools', 'agents', 'subagents'] as const
 
@@ -122,7 +128,7 @@ export function apply(ctx: Context, config: Config): void {
           + orphans.slice(0, 6).map((o) => '· ' + describeOrphan(o)).join('\n')
           + '\n处置：`evolve_orphans` 看清单、`evolve_reap` 收尸（带原因，不删记录）。'
         parent.send(
-          createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'dsh-agent-evolve' } }),
+          createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-agent-evolve' } }),
           'next-step',
           true,
         )
