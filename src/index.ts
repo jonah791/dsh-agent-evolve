@@ -10,7 +10,7 @@
  * - 控制变量：子智能体无对话历史、无账本、无经验注入——唯一变量是本体配置版本。
  * @module dsh-agent-evolve
  */
-import { readFileSync, writeFileSync, existsSync, appendFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, appendFileSync, readdirSync, rmSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -33,6 +33,14 @@ import {
   workspaceMissingMessage,
   workspaceStatus,
 } from './orphans.ts'
+// t-d20b129c：工作区重置契约——`workspace/` 顶层跨代残留的清理与集合差判据（纯函数）
+import {
+  looksLikeWorkspace,
+  planWorkspaceReset,
+  sweptSummary,
+  workspaceResetMessage,
+  workspaceSetDiff,
+} from './workspace-reset.ts'
 import { renderPreset } from './presets.ts'
 import { runFullEval } from './evaluator.ts'
 import type { Ledger, ResourceId } from './types.ts'
@@ -228,19 +236,34 @@ export function apply(ctx: Context, config: Config): void {
   // ---------- evolve_round_start ----------
   ctx.tools.register(defineTool({
     name: 'evolve_round_start',
-    description: '开始一代：重置坏项目（make_broken_project）+ 渲染配置。返回工作区与版本信息。',
+    description: '开始一代：清理上一代残留（workspace/ 顶层集合差判据）+ 重置坏项目（make_broken_project）+ 渲染配置。返回工作区与版本信息。',
     parameters: { note: { type: 'string', description: '本轮说明' } },
-    output: { schema: { type: 'object', additionalProperties: false, properties: { workspace: { type: 'string', required: true }, candidatePromptVersion: { type: 'string', required: true }, rulesVersion: { type: 'string', required: true } } }, render: (_a, v) => [{ type: 'text', text: '一代开始：工作区已重置，任务书 ' + v.candidatePromptVersion + '，本体规则 ' + v.rulesVersion }] },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { workspace: { type: 'string', required: true }, candidatePromptVersion: { type: 'string', required: true }, rulesVersion: { type: 'string', required: true }, swept: { type: 'string', required: true } } }, render: (_a, v) => [{ type: 'text', text: '一代开始：工作区已重置（清理 ' + v.swept + '），任务书 ' + v.candidatePromptVersion + '，本体规则 ' + v.rulesVersion }] },
     async execute() {
       const l = store.ensureLedger()
+      const wsRoot = join(config.modeltestDir, 'workspace')
+      // t-d20b129c：`make_broken_project.py` 的 reset_workspace() 只在 `project2_task/` 内部跑
+      // `git checkout .` + `git clean -fdx`（cwd=TASK_PROJECT），**`workspace/` 顶层的上一代产物
+      // 它一律不碰**（实测残留：`_evidence*/`、`_selftest_*.py`、`_tmp_*`、`project2_task_tree.txt`）。
+      // 不清理 ⇒ 第 N+1 代 child 会看到第 N 代产物 ⇒ 跨代账本不可比。故本插件补这一步并当场断言。
+      const before = existsSync(wsRoot) ? readdirSync(wsRoot) : []
+      if (before.length > 0 && !looksLikeWorkspace(before)) {
+        throw new Error('拒绝重置：' + wsRoot + ' 顶层无脚手架锚（reference/tests/tools）——疑似 modeltestDir 配错，**未做任何删除**。')
+      }
+      const plan = planWorkspaceReset(before)
+      for (const name of plan.remove) rmSync(join(wsRoot, name), { recursive: true, force: true })
       const mb = join(config.modeltestDir, 'evaluator', 'make_broken_project.py')
       await runCmd(config.pythonBin, [mb], config.modeltestDir, 300000)
+      const after = existsSync(wsRoot) ? readdirSync(wsRoot) : []
+      const diff = workspaceSetDiff(after)
+      if (!diff.ok) throw new Error(workspaceResetMessage(diff))
       const rules = store.contentOf(l, 'agent-rules')
       renderPreset(config.dshHome, l, rules, l.compositionSource || defaultComposition)
       return {
         workspace: join(config.modeltestDir, 'workspace', 'project2_task'),
         candidatePromptVersion: store.versionOf(l, 'candidate-prompt'),
         rulesVersion: store.versionOf(l, 'agent-rules'),
+        swept: sweptSummary(plan),
       }
     },
   }))

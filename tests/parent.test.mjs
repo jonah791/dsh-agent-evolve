@@ -3,7 +3,7 @@
  *
  * 含**尸体测试**：用 2026-09-11 的真实事故样本（配置锚点 session-5a785c96… 已不在场）
  * 验证解析器会回退到当前活跃根 agent，而不是像旧实现那样抛「找不到主会话 agent」把主线打死。
- * 运行：node --test tests/
+ * 运行：node --test tests/*.test.mjs（⚠ 目录形式 `node --test tests/` 在 Node 22 上是假红：把目录当测试文件执行）
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'

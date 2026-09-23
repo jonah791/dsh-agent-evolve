@@ -36,8 +36,7 @@
 
 ## 3 · 概念模型
 
-主流水线（工具即步骤）：
-`evolve_init`（登记 v0.0 基线 + 首个锚点）→ `evolve_edit`（追加 vX.Y，若为 `agent-rules` 立即写 AGENTS.md）→ `evolve_round_start`（跑 `make_broken_project.py` 重置坏项目 + 渲染 `evolve-live` 预设）→ `evolve_spawn`（`ctx.subagents.startContinuable` 创建白纸子智能体）→ 主会话 `send_message` 唤醒 → `evolve_submit`（`run_full_eval` → 分数入 `generations`）→ `evolve_commit`（提升/持平 → 新锚点；否则 `rollback=true` 回滚）。
+主流水线（工具即步骤）：`evolve_init`（登记 v0.0 基线 + 首个锚点）→ `evolve_edit`（追加 vX.Y，若为 `agent-rules` 立即写 AGENTS.md）→ `evolve_round_start`（**清上一代残留** + 跑 `make_broken_project.py` 重置坏项目 + **断言工作区集合差** + 渲染 `evolve-live` 预设）→ `evolve_spawn`（`ctx.subagents.startContinuable` 创建白纸子智能体）→ 主会话 `send_message` 唤醒 → `evolve_submit`（`run_full_eval` → 分数入 `generations`）→ `evolve_commit`（提升/持平 → 新锚点；否则 `rollback=true` 回滚）。
 
 不变量：
 1. `active[id]` 非空 ⇒ 该版本尚未入锚；commit 时若 `active` 不在 `anchors` 内则 push 并删除 `active`。
@@ -56,21 +55,22 @@
 | 宿主 agent（模型） | `src/index.ts:apply → ctx.tools.register` 注册 `evolve_init` | 首次初始化基线 |
 | 宿主 agent | `src/index.ts:apply → evolve_edit` | 编辑 `agent-rules`/`candidate-prompt`（附带 `writeRulesToDisk` 热重载） |
 | 宿主 agent | `src/index.ts:apply → evolve_commit`（`rollback` 分支） | 提升/持平提交新锚点；降低时回滚 |
-| 宿主 agent | `src/index.ts:apply → evolve_round_start` | 开一代（`runCmd(pythonBin, make_broken_project.py)` + `renderPreset`） |
+| 宿主 agent | `src/index.ts:apply → evolve_round_start` | 开一代（**先清上一代残留** → `runCmd(pythonBin, make_broken_project.py)` → **集合差断言** → `renderPreset`） |
 | 宿主 agent | `src/index.ts:apply → evolve_spawn` | 派发白纸子智能体（`ctx.subagents.startContinuable`） |
 | 宿主 agent | `src/index.ts:apply → evolve_status` / `evolve_submit` / `evolve_ledger` | 查状态 / 跑评测入账 / 读账本 |
 | 主会话（我方手动动作） | `send_message` 到 `evolve_spawn` 返回的 `sessionId`（`started.childId`） | spawn 返回后——**唯一唤醒路径**（源码注释：不在 spawn 内 followup，避免与 startContinuable 竞态） |
 | 宿主 agent | `src/index.ts:resolveParentAgent → src/parent.ts:selectParentAgent` | 每次 spawn 解析父 agent（锚点 → 活跃根 agent → 响亮错误） |
 | 宿主 agent | `src/index.ts:evolve_round_start → src/presets.ts:renderPreset` | 每轮开始渲染 `<dshHome>/.agent-presets/evolve-live/` |
+| 宿主 agent | `src/index.ts:evolve_round_start → src/workspace-reset.ts:{looksLikeWorkspace,planWorkspaceReset,workspaceSetDiff}` | 每轮开始：`<modeltestDir>/workspace` 顶层残留清理 + 干净基线断言（t-d20b129c） |
 | 宿主 agent | `src/index.ts:evolve_submit → src/evaluator.ts:runFullEval` | 提交评测（阻塞至完成/超时 `evalTimeoutMs`） |
 | 本插件 | `ctx.agents.get(config.mainSessionId)` / `ctx.agents.list()` | 解析父 agent 的两个真源 |
 | 外部脚本 | `<modeltestDir>/evaluator/make_broken_project.py`、`<modeltestDir>/evaluator/run_full_eval.py` | 由 `runCmd` / `runCapture` 以 `pythonBin` 启动 |
 | 宿主 agent-instructions | 读取 `<workspaceDir>/AGENTS.md` 标记段 | 每 turn（热重载的消费点） |
 | 预设加载器 | 读取 `<dshHome>/.agent-presets/evolve-live/agent.cordis.yml` + `preset.yml` | 会话创建时（运行时发现，无需重启） |
 
-本插件**不发射自定义会话事件**；对外只有 8 个工具 + 5 类落盘产物。
+本插件**不发射自定义会话事件**；对外只有 10 个工具 + 5 类落盘产物。
 
-**4.2 工具契约（8 个，名字逐字）**：`evolve_init`、`evolve_edit`、`evolve_commit`、`evolve_round_start`、`evolve_spawn`、`evolve_status`、`evolve_submit`、`evolve_ledger`。输出 schema 一律 `additionalProperties: false`（严格返回值校验），键分别为：`{ok,candidatePromptFile,anchors}` / `{version,diff,hotReloaded}` / `{action,anchor,rollbackFrom?}` / `{workspace,candidatePromptVersion,rulesVersion}` / `{runId,sessionId}` / `{runs}` / `{ability,ship,releaseClass,dimensions}` / `{ledger}`。
+**4.2 工具契约（10 个，名字逐字）**：`evolve_init`、`evolve_edit`、`evolve_commit`、`evolve_round_start`、`evolve_spawn`、`evolve_status`、`evolve_submit`、`evolve_ledger`、`evolve_orphans`、`evolve_reap`。输出 schema 一律 `additionalProperties: false`（严格返回值校验），键分别为：`{ok,candidatePromptFile,anchors}` / `{version,diff,hotReloaded}` / `{action,anchor,rollbackFrom?}` / `{workspace,candidatePromptVersion,rulesVersion,swept}` / `{runId,sessionId}` / `{runs}` / `{ability,ship,releaseClass,dimensions}` / `{ledger}` / `{orphans}` / `{reaped,dryRun}`。
 
 **4.3 配置契约（`Config`）**：`modeltestDir`(必填)、`workspaceDir`(必填)、`mainSessionId`(默认 `''`)、`pythonBin`(默认 `python`)、`dshHome`(默认 `process.env.DSH_HOME || ''`)、`dataDir`(默认 `process.env.DSH_HOME ? process.env.DSH_HOME + '/.evolve' : 'E:/alice/.evolve'`)、`evalTimeoutMs`(默认 `1500000`)。
 
@@ -96,7 +96,7 @@
 
 | # | 可证伪命题 | 证据（单测名或命令或日志行或落盘产物） | 状态 |
 |---|-----------|----------------------------------------|------|
-| 1 | 父 agent 解析在锚点腐化时回退而非抛错 | `tests/parent.test.mjs`「尸体样本：配置锚点已腐化…回退到当前活跃根 agent」（`node --test tests/`） | 已通过（离线） |
+| 1 | 父 agent 解析在锚点腐化时回退而非抛错 | `tests/parent.test.mjs`「尸体样本：配置锚点已腐化…回退到当前活跃根 agent」（`node --test tests/*.test.mjs`） | 已通过（离线） |
 | 2 | 无活跃根 agent 时响亮报错，含 `agents=0` 与锚点回显 | `tests/parent.test.mjs`「无任何活跃 agent → 响亮错误」 | 已通过（离线） |
 | 3 | 子代理（`delegationDepth>0`）不会被当作父 | `tests/parent.test.mjs`「只有子代理在场…」 | 已通过（离线） |
 | 4 | `evolve_edit(agent-rules)` 后 AGENTS.md 标记段 = 新版本正文 | `read` `<workspaceDir>/AGENTS.md` 标记段 vs `ledger.json` 的 `active['agent-rules']` 正文逐字比对 | 待验收 |
@@ -110,6 +110,8 @@
 | 12 | 超期 `pending`/`running` 被判为孤儿，且给出**超期量**（不是布尔）+ 三组对照不误报 | `tests/orphans.test.mjs`「尸体样本（gen10 形状）…带超期量」·「刚派发 10 分钟不得判孤儿」·「done/failed 永不入选」·「时刻不可解析 ⇒ 不判孤儿」 | 已实测（离线） |
 | 13 | 收尸有原语且**留痕**（不删记录）：`reap` 写 `reaped:{at,reason}` + note；缺省 `dryRun` 只预览 | `evolve_reap`（`runs/<id>.json` 应变 `status:"failed"` 且含 `reaped`）——需重启后执行 | 待线上验收（重启被宿主构建错位阻断，见 §9） |
 | 14 | 截断提交被标记：child 无闭合 `turn/end` ⇒ `note` 带固定 caveat，随账本代记留档 | `tests/orphans.test.mjs`「尸体样本（gen10 现场形状）：…⇒ 判截断」+「末轮以 turn/end 收尾 ⇒ 不得判截断」 | 已实测（离线） |
+| 15 | 工作区重置的清理与判据：上一代残留（`_evidence*/`、`_selftest_*.py`、`_tmp_*`…）被判为要清，脚手架项一项不动；重置后顶层条目集 == 基线集（集合差为空） | `tests/workspace-reset.test.mjs`（8 例，尸体样本 = 2026-09-23 现场抄下的 **13 项真实残留**）· 进程外实测：`BEFORE 18 项 → SWEEP 13 项 → AFTER ONBOARDING_TODO.md\|project2_task\|reference\|tests\|tools → DIFF ok=true extra=[] missing=[]` | 已实测（离线 + 进程外） |
+| 16 | `evolve_round_start` **在本进程内**执行清理并当场断言（接线生效，非仅纯函数可用） | `plugin_boot_status` 报「需重启 1（dsh-agent-evolve）」⇒ 当前 web 进程仍是旧构建；重启后调用 `evolve_round_start`，应返回 `swept` 非空且不抛错 | 待线上验收（需重启加载新构建，见 §9） |
 
 ## 8 · 与实现的关系
 
@@ -139,6 +141,15 @@
   - ⚠ **活体验收被宿主级构建错位阻断（不是本插件的问题）**：`.dsh/profiles/web` 组合加载失败（`bundle/web-app` 的 `dsh.bundle.patch` 已改为 5 层数组，而 `app-boot/lib` 仍是 09-19 的单字符串版本）⇒ `preflight_check` FAIL、**任何重启被拒**。尸体样本 `gen99-corpse.json` 已留在 `<dataDir>/runs/`（连同 6 条真实孤儿 gen2/gen4×3/gen8×2/gen9/gen10）⇒ **下次重启成功时启动自检会自动报出**，验收自行完成（步骤见 §7 第 13 行）。
   - 教训（比缺陷本身重要）：**同宿主给既有机制新增通道时，必须把既有防线的每一半抄过来**——同日 `dsh-agent-context` 的梯级插话就因没继承既有防线而每次压缩后误报一次（详见技能 `acceptance-integrity` §三·补 6）。
 
+- **2026-09-23 工作区跨代污染（t-d20b129c）**
+  - 语义**被修正**：`evolve_round_start` 的「工作区已重置」原先只对 `<modeltestDir>/workspace/project2_task/` 成立——`make_broken_project.py:reset_workspace()` 的 `git checkout .` + `git clean -fdx` 以 `cwd=TASK_PROJECT` 执行，**`workspace/` 顶层一律不碰**。实测残留 **13 项**：`_evidence/`(09-20) · `_evidence_v41/`(09-23) · `_selftest_*.py`×5 · `_tmp_review/` · `_tmp_review_stub/` · `_tmp_onboard_full.md` · `project2_task_tree.txt` · `_esp_verify.py` · `_net_syntax_check.cpp` ⇒ 第 N+1 代 child 会看到第 N 代产物，**跨代账本可比性受威胁**。
+  - 语义**被补充**：新增 `src/workspace-reset.ts`（纯函数，IO 留在 `index.ts`）——`WORKSPACE_BASELINE`（干净基线唯一真源）+ `looksLikeWorkspace`（**防误删闸门**：顶层无脚手架锚即拒绝动手、不删任何东西）+ `planWorkspaceReset` + `workspaceSetDiff`（判据：重置后顶层条目集 == 基线集，集合差为空）+ `sweptSummary`（清理动作可审计，不静默）。`evolve_round_start` 序列变为 **清残留 → 跑 make_broken_project → 断言集合差 → renderPreset**，输出 schema 增 `swept`。
+  - **同族第三例**：① 09-11 配置腐化（`parent.ts`）② 09-20 归档搬走活跃工作区（`workspaceStatus`）③ 本次（`workspaceReset`）——三次都是「**工作区状态不受控**」，三次都修成「纯函数 + 尸体测试」。⇒ 该器官的失效模式已收敛为一条：**工作区不是一个受控对象**。
+  - 判据：`node --test tests/*.test.mjs` → **31/31**（新增 8：13 项真实残留尸体样本 + 集合差三态 + 幂等 + 防误删闸门 + 基线自洽 + 报错文本）。⚠ **`node --test tests/`（目录形式）在 Node 22.22.1 上是假红**（把目录当测试文件执行，输出 `not ok 1 - tests` 且无细节）——权威形式是 `node --test tests/*.test.mjs`；`tests/parent.test.mjs` 头注释里的旧命令待修。
+  - 进程外实测（web 进程仍跑旧构建，判据见 §8 第 1 条）：`BEFORE 18 项 → SWEEP 13 项 → AFTER 5 项 → DIFF ok=true extra=[] missing=[] → VERDICT 达干净基线`。
+  - 现场处置留痕：清理**前先备份** 13 项残留到 `E:\alice\_archive\modeltest-workspace-prev-gen10-20260923\`（764K，含验收脚本）——它们是 `gen10-mudz1pnr` 唯一一份原始证据，清掉就没了；`project2_task` 61M **未备份**（可由 `evaluator/broken_backup/project2_broken_seed` 再生，且 child 解法留在会话 `2833ae2d` 日志里）。
+  - 动工前的现场取证：`evolve_orphans` = **无孤儿 run** ⇒ 无活跃 child 在写（该轮 `gen10-mudz1pnr` 已 `done`，`doneAt 2026-09-23T11:15:38Z` = 本地 19:15，与 `_evidence_v41` 的 mtime 吻合）。**改工作区前先证明没人正在写它。**
+
 ## 10 · 未决问题
 
 1. **预设占位符从不替换**：`EvolveStore` 构造时 `compositionSource` 传 `''`，`evolve_round_start` 走 `defaultComposition`，而该模板**不含** `{{SYSTEM_PROMPT}}` ⇒ `renderPreset` 的替换分支不触发，`evolve-live` 预设里没有本体规则；规则实际经 `buildTaskPrompt` 进入子智能体任务文本。是否有意为之？待确认。
@@ -147,4 +158,4 @@
 4. `evolve_submit` 取「`results/` 下 mtime 最新的 summary.json」，未按 `runGroupId`（`evolve-gen<n>`）精确定位——并行/追加评测时存在取错风险。
 5. `evalTimeoutMs` 默认 25 分钟；超时（`124`）与无 summary 报同一条错误文案，事后无法从错误区分超时与评测崩溃。
 6. ~~`dataDir` 现场落点 `E:/alice/.evolve` …配置文件位置待查。~~ **2026-09-22 结案**：配置就在 `.dsh/profiles/web/cordis.patch.yml` 的 `dsh-agent-evolve` 行里显式声明——`modeltestDir: E:/alice/_tmp_review/modeltest` / `workspaceDir: E:/alice` / `mainSessionId: session-5a785c96-…` / `dshHome: E:/alice/.dsh` / `dataDir: E:/alice/.evolve`。⇒ 默认值（`DSH_HOME/.evolve`）**不生效**，以 patch 为准。**顺带一个风险登记**：`modeltestDir` 指向 `_tmp_review/modeltest`（一个会被归档/清理的临时目录）⇒ 第 11 行的工作区体检正是防它再被搬走。
-7. 本文件状态 `draft`：第 7 节 4/5/8/9/10 条仍「待验收」，未做线上验收前不得升 `implemented`。
+7. 本文件状态 `draft`：第 7 节 4/5/8/9/10/16 条仍「待验收」（其中 16 需一次重启加载新构建），未做线上验收前不得升 `implemented`。
