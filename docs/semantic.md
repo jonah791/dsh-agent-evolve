@@ -108,10 +108,10 @@
 | 10 | 改代码后 `lib/*.js` mtime 晚于 web 进程启动时间才算真正生效 | `Get-ChildItem lib`（本次读数 mtime `2026/9/11 13:45:12`）vs web 进程启动时间 | 待验收 |
 | 11 | 派发**前**校验工作区存在；缺失则**响亮报错且不写 run 记录**（治未乱） | `tests/orphans.test.mjs`「尸体样本（09-13 真因形状）…判缺失」+「真 IO 交叉验证：合成的不存在路径确实被判缺失」 | 已实测（离线） |
 | 12 | 超期 `pending`/`running` 被判为孤儿，且给出**超期量**（不是布尔）+ 三组对照不误报 | `tests/orphans.test.mjs`「尸体样本（gen10 形状）…带超期量」·「刚派发 10 分钟不得判孤儿」·「done/failed 永不入选」·「时刻不可解析 ⇒ 不判孤儿」 | 已实测（离线） |
-| 13 | 收尸有原语且**留痕**（不删记录）：`reap` 写 `reaped:{at,reason}` + note；缺省 `dryRun` 只预览 | `evolve_reap`（`runs/<id>.json` 应变 `status:"failed"` 且含 `reaped`）——需重启后执行 | 待线上验收（重启被宿主构建错位阻断，见 §9） |
+| 13 | 收尸有原语且**留痕**（不删记录）：`reap` 写 `reaped:{at,reason}` + note；缺省 `dryRun` 只预览 | 2026-09-23 现场实跑：`evolve_reap` 收掉 6 条孤儿 ⇒ `runs/<id>.json` 变 `status:"failed"` 且含 `reaped:{at,reason}`，**记录保留**（非删除）。原文写的「重启被宿主构建错位阻断」已不复存在——当日两次哨兵重启均成功 | 已实测（现场） |
 | 14 | 截断提交被标记：child 无闭合 `turn/end` ⇒ `note` 带固定 caveat，随账本代记留档 | `tests/orphans.test.mjs`「尸体样本（gen10 现场形状）：…⇒ 判截断」+「末轮以 turn/end 收尾 ⇒ 不得判截断」 | 已实测（离线） |
 | 15 | 工作区重置的清理与判据：上一代残留（`_evidence*/`、`_selftest_*.py`、`_tmp_*`…）被判为要清，脚手架项一项不动；重置后顶层条目集 == 基线集（集合差为空） | `tests/workspace-reset.test.mjs`（8 例，尸体样本 = 2026-09-23 现场抄下的 **13 项真实残留**）· 进程外实测：`BEFORE 18 项 → SWEEP 13 项 → AFTER ONBOARDING_TODO.md\|project2_task\|reference\|tests\|tools → DIFF ok=true extra=[] missing=[]` | 已实测（离线 + 进程外） |
-| 16 | `evolve_round_start` **在本进程内**执行清理并当场断言（接线生效，非仅纯函数可用） | `plugin_boot_status` 报「需重启 1（dsh-agent-evolve）」⇒ 当前 web 进程仍是旧构建；重启后调用 `evolve_round_start`，应返回 `swept` 非空且不抛错 | 待线上验收（需重启加载新构建，见 §9） |
+| 16 | `evolve_round_start` **在本进程内**执行清理并当场断言（接线生效，非仅纯函数可用） | 重启加载新构建后两读：① 干净态调用 ⇒ 返回 `swept=无残留` 且不抛错（`swept` 字段**只存在于新实现** ⇒ 证明新代码路径在跑 + 断言通过）；② **进程内尸体测试**：种 `_evidence_fake_corpse/` + `_selftest_fake_corpse.py` 再调用 ⇒ 返回「清理 2 项：_evidence_fake_corpse · _selftest_fake_corpse.py」，且**盘上两者真消失**（工作区终态 = 5 个基线项） | 已实测（进程内尸体测试） |
 
 ## 8 · 与实现的关系
 
@@ -158,4 +158,4 @@
 4. `evolve_submit` 取「`results/` 下 mtime 最新的 summary.json」，未按 `runGroupId`（`evolve-gen<n>`）精确定位——并行/追加评测时存在取错风险。
 5. `evalTimeoutMs` 默认 25 分钟；超时（`124`）与无 summary 报同一条错误文案，事后无法从错误区分超时与评测崩溃。
 6. ~~`dataDir` 现场落点 `E:/alice/.evolve` …配置文件位置待查。~~ **2026-09-22 结案**：配置就在 `.dsh/profiles/web/cordis.patch.yml` 的 `dsh-agent-evolve` 行里显式声明——`modeltestDir: E:/alice/_tmp_review/modeltest` / `workspaceDir: E:/alice` / `mainSessionId: session-5a785c96-…` / `dshHome: E:/alice/.dsh` / `dataDir: E:/alice/.evolve`。⇒ 默认值（`DSH_HOME/.evolve`）**不生效**，以 patch 为准。**顺带一个风险登记**：`modeltestDir` 指向 `_tmp_review/modeltest`（一个会被归档/清理的临时目录）⇒ 第 11 行的工作区体检正是防它再被搬走。
-7. 本文件状态 `draft`：第 7 节 4/5/8/9/10/16 条仍「待验收」（其中 16 需一次重启加载新构建），未做线上验收前不得升 `implemented`。
+7. 本文件状态 `draft`：第 7 节 4/5/8/9/10 条仍「待验收」；**13 与 16 已由现场/进程内实测结案**（2026-09-23，两次哨兵重启均成功 ⇒ 原文所述的重启阻断已消失）。未做完全部线上验收前不得升 `implemented`。
